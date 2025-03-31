@@ -71,9 +71,9 @@ raw_data <- raw_data %>%
 ```
 
 
-# normalize condensate counts to cell count and average per plate
-# Note: Per well, four field were imaged and analyzed.
-#     For subsequent analysis the data is averaged per well
+# Normalize condensate counts 
+Condensate counts are normalized to cell count 
+(i.e. the number of segmented cells) and average per plate
 ```{r}
 norm_data <- raw_data %>% 
   select(well_id,experiment,plate_id,cell_count,punct_count_adapt,punct_count_global,
@@ -88,13 +88,13 @@ norm_data <- raw_data %>%
 
 
 # Morphology analysis
-# Note: In addition to the condensate and cell counts, morphological features 
-#   describing e.g. cell size and shape extracted. 
-#   Features were extracted of single cells and then averaged per image.
-#   Those image-level averages were then further averaged per well and 
-#   plate as described above. The image analysis and feature extraction 
-#   procedure is described in detail in Schubert et al. 2021
-#   (https://doi.org/10.1073/pnas.2122476119)
+Note: In addition to the condensate and cell counts, morphological features 
+   describing e.g. cell size and shape extracted. 
+   Features were extracted of single cells and then averaged per image.
+   Those image-level averages were then further averaged per well and 
+   plate as described above. The image analysis and feature extraction 
+   procedure is described in detail in Schubert et al. 2021
+   (https://doi.org/10.1073/pnas.2122476119)
 
 ```{r}
 anno_cols <- c("well_id","experiment","plate_id","cell_line","treatment")

@@ -43,8 +43,8 @@ theme_set(theme_cowplot(font_size = 12))
 
 
 # Load the data after the image analysis
-# Note: Per well, four field were imaged and analyzed.
-#     For subsequent analysis the data is averaged per well
+Note: Per well, four field were imaged and analyzed.
+      For subsequent analysis the data is averaged per well
 ```{r}
 files <- list.files(here("raw_data/figure7"))
 
@@ -70,8 +70,9 @@ raw_data <- raw_data %>%
 ```
 
 
-# normalize condensate counts to cell count (i.e. the number of segmented cells) 
-#   and average per plate
+# Normalize condensate counts 
+Condensate counts are normalized to cell count 
+(i.e. the number of segmented cells) and average per plate
 ```{r}
 norm_data <- raw_data %>% 
   select(well_id,experiment,plate_id,

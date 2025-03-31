@@ -70,9 +70,9 @@ raw_data <- raw_data %>%
 
 
 
-# normalize condensate counts to cell count and average per plate
-# Note: Per well, four field were imaged and analyzed.
-#     For subsequent analysis the data is averaged per well
+# Normalize condensate counts 
+Condensate counts are normalized to cell count 
+(i.e. the number of segmented cells) and average per plate
 ```{r}
 norm_data <- raw_data %>% 
   select(well_id,experiment,plate_id,cell_count,punct_count_adapt,punct_count_global,
