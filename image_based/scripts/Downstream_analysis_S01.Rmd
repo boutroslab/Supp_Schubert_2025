@@ -1,0 +1,677 @@
+---
+title: "Down_stream_analysis"
+author: "Christian Scheeder, Florian Heigwer, Antonia Schubert"
+date: \today
+output: html_document
+editor_options: 
+    chunk_output_type: console
+---
+
+# Load dependencies
+
+```{r setup, include=FALSE,echo=FALSE,message=F,warning=F}
+knitr::opts_chunk$set(echo = TRUE)
+library(tidyverse)
+library(here)
+library(ggpubr)
+library(RColorBrewer)
+library(reshape2)
+library(FitAR)
+library(ggrepel)
+library(caret)
+library(pheatmap)
+library(heatmaply)
+library(DT)
+library(cowplot)
+library(ggrastr)
+theme_set(theme_cowplot())
+```
+
+# Preamble
+
+In this experiment cell lines possessing a endogenously tagged Dsh allele were subjected to a high-throughput compound screening experiment. To this end, different cell lines were seeded, and pre-incubated at 25 °C for 24 h. Afterwards cells were treated with 0.5 µM or 5 µM of chemical compound (concentration "l" and "h" respectively). After treatment cells were incubated for further 48 h and afterwards fixed and stained for DNA, actin and alpha-tubulin. Cells were then imaged using the InCell 2200 Analyzer at 20 x magnification, 3 channels per field of view, 4 fields per well. Cells were then segmented from each image and analyzed for morphology and marker staining intensity.
+
+During analysis it's ought to be found out if there are chemical compounds or repurposed drugs that decrease or increase the abundance of Dsh condensates throughout the cytoplasm. So the data is read int, filtered, glog transformed, quantile normalized, centered and scaled per screen, plate and feature and then scored for reproducibility and foldchange in condensate abundance.
+
+cl080 = HEK293 wild-type 
+cl081 = HEK293 (Dsh-eosFP)
+cl082 = other
+
+# Load the data 
+# The data set was pulled from the data base and average per well 
+
+(mean over four fields per well, see get_data.Rmd for details).
+
+```{r,echo=F,warning=F,message=F}
+raw_data <- readRDS(here("data","HC1098_S01_rawData_sum.rds")) 
+```
+
+# Add the cell line annotation with redaily interpretable names
+
+```{r,echo=F,warning=F,message=F}
+cell_line_anno <- 
+  tibble(cell_line_id=c("cl080","cl081","cl082"),
+             cell_line = c("wildtype",
+                           "Dsh_eos",
+                           "FZD_ko"))
+
+raw_data <- raw_data %>% 
+  left_join(cell_line_anno,by=c("cell_line_id")) %>% 
+  filter(cell_line != "FZD_ko") 
+
+```
+
+# Add library annotations 
+
+```{r,echo=F,warning=F,message=F}
+
+# load the annotation files 
+anno_inf <- read_delim(here("annotation/old","informerv2_anno_final.txt"), delim = ",") %>% 
+          mutate(library_plate_id = "1",library_id = "INF1") %>%
+          rename(target_cc=target)%>%
+          mutate(target_selleck=target_cc)
+
+anno_kin <- read_delim(here("annotation","HC1094_selleckKIN1_anno.csv"), delim = ",") %>% 
+          mutate(library_plate_id = as.character(plate_id),library_id = "KIN1")%>%
+          extract(library_plate_id,"library_plate_id",".+_p(\\d)") 
+
+anno_FDA <- read_delim(here("annotation","HC1094_selleckFDA1_anno.csv"), delim = ",") %>% 
+          mutate(library_plate_id = as.character(plate_id),library_id = "FDA1")%>%
+          extract(library_plate_id,"library_plate_id",".+_p(\\d)") 
+
+anno <- bind_rows(anno_inf,anno_kin,anno_FDA)
+
+anno %<>%
+  separate(target_cc,into = c("temp1","temp2","temp3"),extra = "drop",sep = ";") %>%
+  mutate(temp2=if_else(is.na(temp2),"",temp2),
+         temp3=if_else(is.na(temp3),"",temp3)) %>%
+  unite(temp1,temp2,temp3,col = "target_cc",sep = ";") %>%
+  mutate(target_cc=gsub(";+$","",target_cc)) %>%
+  mutate(target_cc=if_else(grepl("NA",target_cc),if_else(!grepl("DMSO",target_selleck),target_selleck,"NA"),target_cc)) %>%
+   mutate(value=if_else(grepl("DMSO",product_name),"DMSO_ctrl",value)) %>%
+  mutate(target_cc=if_else(grepl("DMSO",product_name),"DMSO_ctrl",target_cc)) %>%
+  mutate(well_id = gsub("^(\\w)(\\d)$","\\10\\2",well_id))
+
+# left join annotation and data 
+raw_data <- raw_data %>% 
+  mutate(library_plate_id = as.character(library_plate_id)) %>% 
+  left_join(anno,by=c("well_id","library_plate_id","library_id")) %>% 
+  select(-fussel,-dark,-dead_cells)
+
+```
+
+# Manually annotate the positive controls and change the annotation for the FZD ko
+
+```{r,echo=F,warning=F,message=F}
+
+raw_data <- raw_data %>% 
+  mutate(value="sample") %>%
+  mutate(value = if_else(grepl("DMSO",target_selleck), "DMSO_ctrl", value)) %>% 
+  mutate(type = if_else(grepl("DMSO",target_selleck), "DMSO_ctrl", type)) %>%
+  mutate(product_name = if_else(grepl("DMSO",target_selleck), "DMSO_ctrl", product_name)) %>% 
+  mutate(catalog_number = if_else(grepl("DMSO",target_selleck), "DMSO_ctrl", catalog_number)) %>% 
+  mutate(target_cc = if_else(grepl("DMSO",target_selleck), "DMSO_ctrl", target_cc))
+
+pos_ctrls <- c("B02","G12","M21","L07","E17")
+
+raw_data <- raw_data %>% 
+  mutate(value = if_else(well_id %in% pos_ctrls & library_id == "KIN1", "pos_ctrl", value)) %>%
+   mutate(type = if_else(well_id %in% pos_ctrls & library_id == "KIN1", "pos_ctrl", type)) %>%
+  mutate(product_name = if_else(well_id %in% pos_ctrls & library_id == "KIN1","PF-670462", product_name)) %>% 
+  mutate(catalog_number = if_else(well_id %in% pos_ctrls & library_id == "KIN1", "S6734", catalog_number)) %>% 
+  mutate(target_cc= if_else(well_id %in% pos_ctrls & library_id == "KIN1", "CK1", target_cc)) %>%
+    mutate(target_selleck= if_else(well_id %in% pos_ctrls & library_id == "KIN1", "CK1", target_selleck)) 
+
+
+
+```
+
+# Define annotation columns to used during the following analysis
+
+```{r,echo=F,warning=F,message=F}
+anno_columns <- c("cell_line","catalog_number","product_name","value","target_cc","target_selleck",
+                   "cell_line_id","screen_id","library_id","library_plate_id",
+                   "concentration","well_id", "plate_id","type", "InChIKey","cc_status")
+```
+
+
+## QC
+# Boxplots
+```{r,echo=F,warning=F,message=F}
+# Boxplots per plate with DMSO controls for cell_count
+raw_data %>% filter(value == "DMSO_ctrl") %>% 
+  unite(plate_id,library_id,screen_id,library_plate_id,concentration) %>% 
+    ggplot(aes(x=plate_id,y=cell_count,color=cell_line)) + geom_boxplot() +
+      theme(axis.text.x = element_text(angle = 45, hjust=1)) +
+        ggtitle("Boxplots per plate with DMSO controls for cell_count")
+
+# Boxplots per plate with DMSO controls for dot count
+raw_data %>% filter(value == "DMSO_ctrl") %>% 
+  unite(plate_id,library_id,screen_id,library_plate_id,concentration) %>% 
+    ggplot(aes(x=plate_id,y=punct_count,color=cell_line)) + geom_boxplot() + 
+        theme(axis.text.x = element_text(angle = 45, hjust=1)) +
+          ggtitle("Boxplots per plate with DMSO controls for dot count")
+
+
+# Boxplots per plate with all samples for cell_count
+raw_data %>% filter(value == "sample") %>% 
+  unite(plate_id,library_id,screen_id,library_plate_id,concentration) %>% 
+    ggplot(aes(x=plate_id,y=cell_count,color=cell_line)) + geom_boxplot() + 
+        theme(axis.text.x = element_text(angle = 45, vjust = 1, hjust=1)) +
+          ggtitle("Boxplots per plate with samples for dot count")
+
+# Boxplots per plate with all samples for dot count
+raw_data %>% filter(value == "sample") %>% 
+  unite(plate_id,library_id,screen_id,library_plate_id,concentration) %>% 
+    ggplot(aes(x=plate_id,y=punct_count,color=cell_line)) + geom_boxplot() + 
+        theme(axis.text.x = element_text(angle = 45, vjust = 1, hjust=1)) +
+          ggtitle("Boxplots per plate with samples for dot count")
+
+# Dot plot per plate with positive controls
+
+raw_data %>% 
+  filter(value %in% c("DMSO_ctrl","pos_ctrl")) %>% 
+  unite(plate_id,library_id,screen_id,library_plate_id,concentration) %>% 
+    ggplot(aes(x=plate_id,y=punct_count,color=value)) + 
+          geom_boxplot() + 
+            facet_wrap(~cell_line) + 
+              theme(axis.text.x = element_text(angle = 45, vjust = 0.5, hjust=1)) +
+ggtitle("Dot plot per plate with samples for dot count with DMSO boxplots overlayed")
+
+```
+
+
+# Plate plots
+```{r,echo=F,warning=F,message=F}
+raw_data %>% filter(cell_line == "wildtype") %>% 
+  unite(plate_id,library_id,library_plate_id,concentration) %>% 
+        separate(well_id,c("row","column"),1) %>% 
+  mutate(column = factor(as.numeric(column))) %>% 
+      mutate(row = factor(row,levels = rev(LETTERS[1:16]), labels = as.factor(rev(LETTERS[1:16])))) %>% 
+        ggplot(aes(x=column,y=row)) + geom_tile(aes(fill=cell_count), colour = "white") + 
+          scale_fill_gradientn(colors = rev(brewer.pal(11, "RdBu"))) + facet_wrap(~plate_id+screen_id) + 
+            ggtitle("plate plots wildtype for cell count")
+
+raw_data %>% filter(cell_line == "Dsh_eos") %>% 
+  unite(plate_id,library_id,library_plate_id,concentration) %>% 
+        separate(well_id,c("row","column"),1) %>% 
+  mutate(column = factor(as.numeric(column))) %>% 
+      mutate(row = factor(row,levels = rev(LETTERS[1:16]), labels = as.factor(rev(LETTERS[1:16])))) %>% 
+        ggplot(aes(x=column,y=row)) + geom_tile(aes(fill=cell_count), colour = "white") + 
+          scale_fill_gradientn(colors = rev(brewer.pal(11, "RdBu"))) + facet_wrap(~plate_id+screen_id) + 
+            ggtitle("plate plots Dsh_eos for cell count")
+
+raw_data %>% filter(cell_line == "Dsh_eos") %>% 
+  unite(plate_id,library_id,library_plate_id,concentration) %>% 
+        separate(well_id,c("row","column"),1) %>% 
+  mutate(column = factor(as.numeric(column))) %>% 
+      mutate(row = factor(row,levels = rev(LETTERS[1:16]), labels = as.factor(rev(LETTERS[1:16])))) %>% 
+        ggplot(aes(x=column,y=row)) + geom_tile(aes(fill=punct_count), colour = "white") + 
+          scale_fill_gradientn(colors = rev(brewer.pal(11, "RdBu"))) + facet_wrap(~plate_id) + 
+            ggtitle("plate plots Dsh_eos for dots")
+
+
+# flag well with high count
+raw_data %>% filter(cell_line == "Dsh_eos") %>% 
+  unite(plate_id,library_id,library_plate_id,concentration) %>% 
+        separate(well_id,c("row","column"),1) %>% 
+  mutate(column = factor(as.numeric(column))) %>% 
+  mutate(punct_count = if_else(punct_count>100,NaN,punct_count)) %>% 
+      mutate(row = factor(row,levels = rev(LETTERS[1:16]), labels = as.factor(rev(LETTERS[1:16])))) %>% 
+        ggplot(aes(x=column,y=row)) + geom_tile(aes(fill=punct_count), colour = "white") + 
+          scale_fill_gradientn(colors = rev(brewer.pal(11, "RdBu"))) + facet_wrap(~plate_id+screen_id) + 
+            ggtitle("plate plots Dsh_eos for dots")
+
+```
+
+
+# Only keep the Dsh-eos line
+```{r,echo=F,warning=F,message=F}
+
+raw_data_eos <- raw_data %>% filter(cell_line == "Dsh_eos")
+
+```
+
+
+# Flag data points with high cell count (which are probably contaminated)
+
+Could be done more in a elegant way by setting a quantile cutoff
+
+```{r,echo=F,warning=F,message=F}
+raw_data_eos %>% filter(cell_line == "Dsh_eos" & value == "DMSO_ctrl") %>%
+  ggplot(aes(x=cell_count)) + geom_histogram()
+
+#raw_data_eos <- raw_data_eos %>% 
+    #  mutate(cell_count = if_else(cell_count > 1400,NaN, cell_count)) %>% 
+    #  na.omit() %>%
+    #  filter(target!="DMSO_ctrl_phenolRed")
+```
+
+# Glog transform that data 
+
+```{r,echo=F,warning=F,message=F}
+for(i in colnames(raw_data_eos[,!colnames(raw_data_eos) %in% anno_columns])) {
+    q = quantile(raw_data_eos[,i],probs=0.05,na.rm=T)
+    if(q == 0){
+        q = 0.05 * max(raw_data_eos[,i],na.rm = T)
+    }
+    raw_data_eos[,i] <- glog(raw_data_eos[,i], q)
+}
+
+```
+
+# Bring the data in long format
+
+```{r,echo=F,warning=F,message=F}
+raw_data_long <- raw_data_eos %>% 
+  melt(id.vars = anno_columns,
+       variable.name = "feature", value.name = "measurement") %>%
+        as_tibble()
+```
+
+
+
+# Normalization 
+We first normalize per plate and then the dots relative to the cell count per well. 
+We also keep the un-normalized puncta counts.
+
+```{r,echo=F,warning=F,message=F}
+
+norm_data <- raw_data_long %>% 
+  group_by(feature,library_id,library_plate_id,screen_id,concentration,cell_line) %>%
+  mutate(measurement = measurement - median(measurement,na.rm = T)) %>%
+   ungroup() 
+
+norm_data_punct_count <- norm_data %>% filter(feature == "punct_count")
+
+norm_data <- norm_data %>% 
+                  group_by(library_id,library_plate_id,screen_id,concentration,cell_line,well_id) %>%
+                  mutate(measurement = if_else(feature == "punct_count",
+                                             measurement - measurement[feature == "cell_count"],
+                                             measurement)) %>% 
+                  ungroup() %>% 
+                  mutate(feature = if_else(feature ==  "punct_count",
+                                                          "punct_count_norm",
+                                                         as.character(feature))) %>% 
+                    bind_rows(norm_data_punct_count)
+
+norm_data <- norm_data %>%
+  group_by(feature) %>%
+  mutate(measurement=measurement/mad(measurement[value=="DMSO_ctrl"],na.rm=T))
+
+norm_data_spread <- norm_data %>%
+  filter(feature %in% c(
+    "punct_count","punct_count_norm",
+    "cell_count","mean_cell.0.m.eccentricity",
+    "mean_cell.0.s.area","mean_nuc.0.s.area")
+    ) %>%
+  spread(feature,measurement) 
+
+
+
+replicate_spread <- norm_data_punct_count %>% spread(screen_id,measurement) %>% 
+                      mutate(type = if_else(product_name=="DMSO_ctrl","neg",if_else(product_name=="PF-670462","pos","sample"))) %>%
+  filter(concentration=="h")
+
+p1 <- replicate_spread %>% 
+  ggplot(aes(x=S02,y=S03)) + 
+    geom_point(data = replicate_spread %>% filter(type=="sample"),col="darkgrey") +
+    geom_point(data = replicate_spread %>% filter(type=="neg"),col="#f653a6") +
+    geom_point(data = replicate_spread %>% filter(type=="pos"),col="blue") +
+    scale_color_manual(values = c("#f653a6","blue","darkgrey")) +
+    geom_smooth(method = "lm",show.legend = T,data = replicate_spread,col="grey") +
+    ggtitle(paste0("PCC = ",round(cor(replicate_spread$S02,replicate_spread$S03,use = "p",method = "p"),digits = 2)))
+
+p2 <- replicate_spread %>% 
+  ggplot(aes(x=S01,y=S03)) + 
+    geom_point(data = replicate_spread %>% filter(type=="sample"),col="darkgrey") +
+    geom_point(data = replicate_spread %>% filter(type=="neg"),col="#f653a6") +
+    geom_point(data = replicate_spread %>% filter(type=="pos"),col="blue") +
+    scale_color_manual(values = c("#f653a6","blue","darkgrey")) +
+    geom_smooth(method = "lm",show.legend = T,data = replicate_spread,col="grey") +
+    ggtitle(paste0("PCC = ",round(cor(replicate_spread$S01,replicate_spread$S03,use = "p",method = "p"),digits = 2)))
+
+p3 <- replicate_spread %>% 
+  ggplot(aes(x=S01,y=S02)) + 
+    geom_point(data = replicate_spread %>% filter(type=="sample"),col="darkgrey") +
+    geom_point(data = replicate_spread %>% filter(type=="neg"),col="#f653a6") +
+    geom_point(data = replicate_spread %>% filter(type=="pos"),col="blue") +
+    scale_color_manual(values = c("#f653a6","blue","darkgrey")) +
+    geom_smooth(method = "lm",show.legend = T,data = replicate_spread,col="grey") +
+    ggtitle(paste0("PCC = ",round(cor(replicate_spread$S02,replicate_spread$S01,use = "p",method = "p"),digits = 2)))
+
+ggsave(filename = "replicate_correlation_main_high.pdf",plot = p1,height = 8,width = 8)
+
+ggsave(filename = "replicate_correlation_supplement_high.pdf",plot = p1 + p2 +p3,height = 8,width = 24)
+
+
+replicate_spread <- norm_data_punct_count %>% spread(screen_id,measurement) %>% 
+                      mutate(type = if_else(product_name=="DMSO_ctrl","neg",if_else(product_name=="PF-670462","pos","sample"))) %>%
+  filter(concentration=="l")
+
+p1 <- replicate_spread %>% 
+  ggplot(aes(x=S02,y=S03)) + 
+    geom_point(data = replicate_spread %>% filter(type=="sample"),col="darkgrey") +
+    geom_point(data = replicate_spread %>% filter(type=="neg"),col="#f653a6") +
+    geom_point(data = replicate_spread %>% filter(type=="pos"),col="blue") +
+    scale_color_manual(values = c("#f653a6","blue","darkgrey")) +
+    geom_smooth(method = "lm",show.legend = T,data = replicate_spread,col="grey") +
+    ggtitle(paste0("PCC = ",round(cor(replicate_spread$S02,replicate_spread$S03,use = "p",method = "p"),digits = 2)))
+
+p2 <- replicate_spread %>% 
+  ggplot(aes(x=S01,y=S03)) + 
+    geom_point(data = replicate_spread %>% filter(type=="sample"),col="darkgrey") +
+    geom_point(data = replicate_spread %>% filter(type=="neg"),col="#f653a6") +
+    geom_point(data = replicate_spread %>% filter(type=="pos"),col="blue") +
+    scale_color_manual(values = c("#f653a6","blue","darkgrey")) +
+    geom_smooth(method = "lm",show.legend = T,data = replicate_spread,col="grey") +
+    ggtitle(paste0("PCC = ",round(cor(replicate_spread$S01,replicate_spread$S03,use = "p",method = "p"),digits = 2)))
+
+p3 <- replicate_spread %>% 
+  ggplot(aes(x=S01,y=S02)) + 
+    geom_point(data = replicate_spread %>% filter(type=="sample"),col="darkgrey") +
+    geom_point(data = replicate_spread %>% filter(type=="neg"),col="#f653a6") +
+    geom_point(data = replicate_spread %>% filter(type=="pos"),col="blue") +
+    scale_color_manual(values = c("#f653a6","blue","darkgrey")) +
+    geom_smooth(method = "lm",show.legend = T,data = replicate_spread,col="grey") +
+    ggtitle(paste0("PCC = ",round(cor(replicate_spread$S02,replicate_spread$S01,use = "p",method = "p"),digits = 2)))
+
+ggsave(filename = "replicate_correlation_main_low.pdf",plot = p1,height = 8,width = 8)
+
+ggsave(filename = "replicate_correlation_supplement_low.pdf",plot = p1 + p2 +p3,height = 8,width = 24)
+
+p1 <- norm_data_spread %>% 
+  filter(product_name %in% c("Afatinib (BIBW2992)","AT9283","Silmitasertib (CX-4945)","BMS-754807","PF-670462","SC1","DMSO_ctrl")) %>%
+  ggplot(aes(x=reorder(product_name,punct_count_norm,median),y=punct_count_norm)) +
+    geom_boxplot_jitter(fill="darkgrey") +
+    facet_wrap(~concentration)+ 
+  theme(axis.text.x = element_text(angle = -45, vjust = 0.5, hjust=0.1))+
+    xlab("compound") +
+    ylab("puncta count [z]")
+
+ggsave(filename = "treatment_boxplots.pdf",plot = p1,height = 8,width = 24)
+
+for(i in c("Afatinib (BIBW2992)","AT9283","Silmitasertib (CX-4945)","BMS-754807","PF-670462","SC1")){
+  p1 <- norm_data_spread %>% 
+  filter(product_name %in% c(i,"DMSO_ctrl")) %>%
+  ggplot(aes(x=factor(product_name,levels=c(i,"DMSO_ctrl")),y=punct_count_norm)) +
+    geom_boxplot_jitter(fill="darkgrey") +
+    facet_wrap(~concentration)+ 
+  #theme(axis.text.x = element_text(angle = -45, vjust = 0.5, hjust=0.1))+
+    xlab("compound") +
+    ylab("puncta count [z]")+
+    ggtitle(i,subtitle = "p-value by Wilcoxon rank sum test")+
+    stat_compare_means(comparisons = list(c("DMSO_ctrl",i)),label=NA)+
+    ylim(-13,9)
+  
+  ggsave(filename = paste0(i,"_treatment_boxplots.pdf"),plot = p1,height = 6,width = 4)
+
+  
+}
+    
+
+a <- norm_data_spread %>% 
+  group_by(catalog_number) %>%
+  summarise_if(is.numeric,mean) %>%
+  ggplot(aes(x=cell_count,y=punct_count_norm)) +
+    geom_point_rast(raster.dpi = 300,raster.width = 4,raster.height = 4) +
+    geom_smooth(method = "lm") +
+    xlab("cell count [z-score]") +
+    ylab("puncta count [z-score]")
+
+b <- norm_data_spread %>% 
+  group_by(catalog_number) %>%
+  summarise_if(is.numeric,mean) %>%
+  ggplot(aes(x=mean_cell.0.s.area,y=punct_count_norm)) +
+    geom_point_rast(raster.dpi = 300,raster.width = 4,raster.height = 4) +
+    geom_smooth(method = "lm") +
+    xlab("cell area [z-score]") +
+    ylab("puncta count [z-score]")
+
+c <- norm_data_spread %>% 
+  group_by(catalog_number) %>%
+  summarise_if(is.numeric,mean) %>%
+  ggplot(aes(x=mean_cell.0.m.eccentricity,y=punct_count_norm)) +
+    geom_point_rast(raster.dpi = 300,raster.width = 4,raster.height = 4) +
+    geom_smooth(method = "lm") +
+    xlab("cell eccentricity [z-score]") +
+    ylab("puncta count [z-score]")
+
+d <- norm_data_spread %>% 
+  group_by(catalog_number) %>%
+  summarise_if(is.numeric,mean) %>%
+  ggplot(aes(x=mean_nuc.0.s.area,y=punct_count_norm)) +
+    geom_point_rast(raster.dpi = 300,raster.width = 4,raster.height = 4) +
+    geom_smooth(method = "lm") +
+    xlab("nuclear size [z-score]") +
+    ylab("puncta count [z-score]")
+
+require(patchwork)
+p <- a+b+c+d
+ggsave("results/morphology_vs_condensates_per_cell.pdf",p,width = 8,height = 8)
+
+
+```
+
+# Hit calling
+
+```{r,echo=F,warning=F,message=F}
+# we first have a look at the distribution of the dot counts 
+norm_data %>% 
+filter(feature == "punct_count_norm"  & 
+         value != "DMSO_ctrl_phenolRed") %>% 
+    group_by(product_name,concentration,target_cc) %>%
+  summarise(measurement=mean(measurement)) %>%
+  ungroup() %>%
+ggplot(aes(x=measurement)) + geom_histogram() + 
+  xlab("Punct count per cell (well/screen average) [z-score]") +
+    ggtitle("Histogram for Dsh-eos")
+
+# Unfortunately stat_qq does not support labels so we re-code the QQ plot
+sample <- norm_data %>% 
+  filter(feature == "punct_count_norm" & cell_line == "Dsh_eos" & value != "DMSO_ctrl_phenolRed") %>% 
+  group_by(product_name,concentration,target_cc) %>%
+  summarise(measurement=mean(measurement)) %>%
+  ungroup() %>%
+  na.omit()  %>% 
+  arrange(measurement) %>% 
+  mutate(rank = seq(1:nrow(.))) 
+
+labels <- sample %>% filter(rank<=10 | rank>= nrow(.)-10) %>% 
+            unite(label,product_name,concentration) %>% 
+              select(label,rank)
+
+probabilities = (1:nrow(sample))/(nrow(sample)+1)
+
+theoretical <- qnorm(probabilities, mean(sample$measurement),
+                     sd(sample$measurement))
+
+sample_theoretical <- sample %>% arrange(measurement) %>% 
+                        mutate(theoretical = sort(theoretical))
+
+labels <- labels %>% left_join(sample_theoretical,by=c("rank"))
+
+ref_line <- cbind.data.frame(
+  standard=qnorm(c(0.25,0.75)),
+  empirical=quantile(sample_theoretical$theoretical, c(0.25,0.75)))
+
+ref_inter <- lm(standard~empirical,data = ref_line)$coefficients[1]
+ref_slope <- lm(standard~empirical,data = ref_line)$coefficients[2]
+
+sample_theoretical %>% 
+  ggplot(aes(x=theoretical,y=measurement)) + 
+    geom_point() + geom_text_repel(data=labels,aes(x=theoretical,y=measurement,label=label)) + 
+            theme(aspect.ratio=1) +  
+  geom_abline(slope = ref_slope,intercept = ref_inter) + 
+  ylab("sample quantiles") + xlab("theoretical quantiles") + 
+          ggtitle("Q-Q plot for the punct count per cell (well/screen average) [z-scores]")
+
+
+# with targets instead of compound names
+labels <- sample %>% filter(rank<=10 | rank>= nrow(.)-10) %>% 
+            mutate(label = target_cc) %>% 
+              select(label,rank)
+
+sample_theoretical <- sample %>% arrange(measurement) %>% 
+  mutate(theoretical = sort(theoretical))
+
+
+labels <- labels %>% left_join(sample_theoretical,by=c("rank"))
+
+p <-sample_theoretical %>% 
+ ggplot(aes(x=theoretical,y=measurement)) + 
+      geom_point_rast(raster.width = 8,raster.height = 8,raster.dpi = 400) +
+      geom_text_repel(data=labels,aes(x=theoretical,y=measurement,label=label)) +
+    geom_abline(slope = ref_slope,intercept = ref_inter) + 
+    theme(aspect.ratio=1) + 
+    ylab("sample quantiles") + 
+    xlab("theoretical quantiles") + 
+    ggtitle("Q-Q plot for the punct count per cell (well average) [z-scores]")+
+    facet_wrap(~concentration)
+
+print(p)
+ 
+ggsave("results/QQplot.pdf",p,width = 16,height = 8)
+```
+
+# Calculate statistical effect size between positive controls and DMSO contorls 
+
+```{r,echo=F,warning=F,message=F}
+norm_data %>% filter(value %in% c("pos_ctrl","DMSO_ctrl")) %>% 
+  filter(feature == "punct_count_norm") %>% 
+  ggplot(aes(x=product_name,y=measurement)) + 
+    facet_wrap(~concentration) +
+    stat_compare_means(comparisons = list(c("DMSO_ctrl","PF-670462")),label=NA) +
+    geom_boxplot() + xlab("sampe type") + 
+    ylab("punct count per cell (well average) [z-score]") +
+    ggtitle("Statistical effect size between contorls for Dsh-eos line (Wilcoxon rank sum test)")
+
+ggsave("results/Control_difference.pdf",width = 8,height = 8)
+```
+
+#Statistical analysis
+
+```{r}
+
+essentials <- 
+  norm_data %>% 
+  filter(feature=="cell_count") %>% 
+  group_by(product_name) %>% 
+  summarise(essentiality=mean(measurement))
+
+nuclear_size <- norm_data %>% 
+  filter(feature=="mean_nuc.0.s.area") %>% 
+  group_by(product_name) %>% 
+  summarise(nuc_size=mean(measurement))
+
+
+normed_data <- norm_data %>% 
+  filter(feature == "punct_count_norm" & cell_line == "Dsh_eos" & value != "DMSO_ctrl_phenolRed"& value != "DMSO_ctrl") %>% 
+  group_by(product_name,catalog_number,concentration,target_cc,screen_id) %>%
+  summarise(measurement=mean(measurement)) %>%
+  ungroup() %>%
+  na.omit() %>%
+  spread(screen_id,measurement) %>%
+  drop_na()
+
+normed_data$pval <- normed_data %>% select_if(is.numeric) %>% limma::lmFit() %>% limma::eBayes() %>% .$p.value %>% as.numeric()
+
+normed_data <- normed_data %>% 
+                  mutate(fdr=p.adjust(pval,method = "BH")) %>% 
+                  mutate(mean_z=(S01+S02+S03)/3) %>%
+                  left_join(essentials) %>%
+                  left_join(nuclear_size)
+
+normed_data %>% 
+  filter(fdr<0.2) %>%
+  rename(Screen_1_puncta_z=S01,Screen_2_puncta_z=S02,Screen_3_puncta_z=S03,Avg_puncta_z=mean_z,normed_cell_count_z=essentiality,normed_nucleus_area=nuc_size) %>%
+  write_delim(file = "results/hit_list_fdr_0.2.csv",delim = ",")
+
+normed_data %>% 
+  rename(Screen_1_puncta_z=S01,Screen_2_puncta_z=S02,Screen_3_puncta_z=S03,Avg_puncta_z=mean_z,normed_cell_count_z=essentiality,normed_nucleus_area=nuc_size) %>%
+  write_delim(file = "results/hit_list_unfiltered.csv",delim = ",")
+
+
+p1<-normed_data %>%
+  mutate(concentration=if_else(concentration=="l","low concentration","high concentration")) %>%
+  ggplot(aes(x=mean_z,y = -log10(pval),label=product_name)) +
+    #geom_point_rast(raster.dpi = 400) +
+    geom_point() +
+    geom_label_repel(data = normed_data %>%
+  mutate(concentration=if_else(concentration=="l","low concentration","high concentration")) %>% filter(fdr<0.1) %>% slice_max(order_by=abs(mean_z),n=20))+
+  facet_wrap(~concentration) +
+    ylab("-log10 p-value") +
+    theme(aspect.ratio=1) + 
+    xlab("puncta count per cell [z-score]")
+
+print(p1)    
+
+p2<-normed_data %>%
+  mutate(concentration=if_else(concentration=="l","low concentration","high concentration")) %>%
+  ggplot(aes(x=mean_z,y = -log10(pval),label=target_cc)) +
+    #geom_point_rast(raster.dpi = 400) +
+    geom_point() +
+    geom_label_repel(data = normed_data %>%
+  mutate(concentration=if_else(concentration=="l","low concentration","high concentration")) %>% filter(fdr<0.1) %>% slice_max(order_by=abs(mean_z),n=20))+
+  facet_wrap(~concentration) +
+    ylab("-log10 p-value") +
+    theme(aspect.ratio=1) + 
+    xlab("puncta count per cell [z-score]")
+
+print(p2)    
+
+p3<-normed_data %>%
+  mutate(concentration=if_else(concentration=="l","low concentration","high concentration")) %>%
+  ggplot(aes(x=mean_z,y = -log10(pval),label=target_cc)) +
+    #geom_point_rast(raster.dpi = 400) +
+    geom_point() +
+    geom_label_repel(data = normed_data %>%  filter(fdr<0.1) %>% slice_max(order_by=abs(mean_z),n=20))+
+    ylab("-log10 p-value") +
+    theme(aspect.ratio=1) + 
+    xlab("puncta count per cell [z-score]")
+
+print(p3)    
+
+
+ggsave("results/Volcanoplot_product_names.pdf",p1,width = 16,height = 8)
+ggsave("results/Volcanoplot_targets.pdf",p2,width = 16,height = 8)
+ggsave("results/Volcanoplot_combined.pdf",p3,width = 16,height = 8)
+
+
+# Volcano plot to highlight CFI-400945
+normed_data %>%
+  mutate(concentration=if_else(concentration=="l","low concentration","high concentration")) %>%
+  ggplot(aes(x=mean_z,y = -log10(pval),label=product_name)) +
+    geom_point() +
+   geom_label_repel(
+     data = filter(normed_data,product_name == "CFI-400945") %>% 
+       mutate(concentration=if_else(concentration=="l","low concentration","high concentration")),
+                  nudge_y       = 1,
+                  size          = 4
+   )+
+  facet_wrap(~concentration) +
+    xlab("puncta count per cell [z-score]") +
+    ylab("-log10 p-value")
+
+
+normed_data %>%
+  mutate(concentration=if_else(concentration=="l","low concentration","high concentration")) %>%
+  ggplot(aes(x=mean_z,y = -log10(pval),label=product_name)) +
+    geom_point() +
+   geom_label_repel(
+     data = filter(normed_data,product_name %in% unique(norm_data$product_name[grepl("PLK",norm_data$target_cc)])) %>% 
+       mutate(concentration=if_else(concentration=="l","low concentration","high concentration")),
+                  nudge_y       = 1,
+                  size          = 4
+   )+
+  facet_wrap(~concentration) +
+    xlab("puncta count per cell [z-score]") +
+    ylab("-log10 p-value")
+
+```
+
+
+# Session info
+```{r}
+sessionInfo()
+```

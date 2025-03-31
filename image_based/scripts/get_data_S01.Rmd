@@ -1,0 +1,58 @@
+---
+title: "Down_stream_analysis"
+author: "Christian Scheeder, Florian heigwer, Antonia Schubert"
+date: "8/5/2020"
+output: html_document
+editor_options: 
+    chunk_output_type: console
+---
+
+# Load dependencies
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+library(tidyverse)
+library(here)
+library(ggpubr)
+library(RColorBrewer)
+```
+
+# Preamble
+cl080 = HEK293 wild-type 
+cl081 = HEK293 (Dsh-eosFP)
+cl082 = other
+
+# Load the data 
+```{r cars}
+av_db <- src_postgres(
+  dbname = "HC1098",
+  host = "b110-sc2sn01",
+  user = "AntoniaS",
+  password = "dvlror2"
+)
+
+raw_data_db <- tbl(av_db,"average_cell") #%>% select(ends_with("_id"))
+
+raw_data <- raw_data_db %>% collect() %>% distinct() %>% filter(!is.na(cell_line_id)) 
+
+```
+
+# average over the 4 fields per well 
+
+```{r}
+raw_data_sum <- 
+  raw_data %>% 
+    mutate(fussel = as.numeric(fussel)) %>%
+    group_by(cell_line_id,screen_id,library_id,library_plate_id,concentration,well_id) %>%
+    mutate_at(vars(-field_id,-cell_line_id,-screen_id,-library_id,
+               -library_plate_id,-concentration,-well_id),
+          ~replace(.,mean(fussel,na.rm =T) >= 0.75 ,NA)) %>% 
+    ungroup() %>% 
+    select(-field_id) %>% 
+    group_by(cell_line_id,screen_id,library_id,library_plate_id,concentration,well_id) %>%
+    summarise_at(vars(-group_cols()),
+             ~mean(.[fussel == 0],na.rm=T)) %>% ungroup()
+
+
+saveRDS(raw_data_sum,here("data", "HC1098_S01_rawData_sum.rds"))
+raw_data_sum <- readRDS(here("data", "HC1098_S01_rawData_sum.rds"))
+```

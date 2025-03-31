@@ -1,0 +1,296 @@
+---
+title: "Script to document the image analysis for HC1098"
+author:  
+- "Christian Scheeder"
+- "Division Signalling and Functional Genomics"
+- "German Cancer Research Center (DKFZ) Heidelberg"
+date: \today
+output:
+    BiocStyle::pdf_document
+vignette: >
+    %\VignetteIndexEntry{Vignette Title}
+    %\VignetteEngine{knitr::rmarkdown}
+editor_options: 
+    chunk_output_type: console
+---
+
+# Preamble
+This script documents the image analysis for the project HC1098 where 
+HEK 293 cells with endogenously tagged Dishevelled (Dsh) were screened against 
+the selleck kinase library. The image analysis parameters defined here 
+were transferred to a pipeline. 
+
+
+# Session Setup    
+Load the required packages
+```{r, echo=F, results='hide', warning=F, message=F}
+library(stringr)
+library(dplyr)
+library(dbplyr)
+library(here)
+library(EBImage)
+library(parallel)
+library(FNN)
+library(RPostgreSQL)
+```
+
+
+
+# Load images of control wells
+Note: The image analysis is set based on negative (DMSO only) and positive 
+controls (5 µM PF-670462, target = CK1 $\epsilon$ and $\delta$).
+
+
+```{r,fig.align="center"}
+# read the DMSO images
+DMSO_DAPI <- readImage(here("images/DMSO","H_12_f1_c2_xDAPI_mDAPI_z1_t1.tif")) 
+DMSO_cy5 <- readImage(here("images/DMSO","H_12_f1_c3_xCy5_mCy5_z1_t1.tif"))
+DMSO_FITC <- readImage(here("images/DMSO","H_12_f1_c1_xFITC_mFITC_z1_t1.tif"))
+
+# let's have a brief look at the DMSO images
+display(combine(
+  normalize(DMSO_DAPI)*5,
+  normalize(DMSO_cy5)*5,
+  normalize(DMSO_FITC)*5),all=T,method = 'raster')
+text(500,200, label="DAPI", col="red", cex=2)
+text(2500,200, label="Cy5", col="red", cex=2)
+text(500,2300, label="FITC", col="red", cex=2)
+
+
+# read the PF-670462 images
+pos_DAPI <- readImage(here("images/PF-670462","G_12_f1_c2_xDAPI_mDAPI_z1_t1.tif")) 
+pos_cy5 <- readImage(here("images/PF-670462","G_12_f1_c3_xCy5_mCy5_z1_t1.tif"))
+pos_FITC <- readImage(here("images/PF-670462","G_12_f1_c1_xFITC_mFITC_z1_t1.tif"))
+
+# let's have a brief look at the PF-670462 images
+display(combine(
+  normalize(pos_DAPI)*5,
+  normalize(pos_cy5)*5,
+  normalize(pos_FITC)*5),all=T,method = 'raster')
+text(500,200, label="DAPI", col="red", cex=2)
+text(2500,200, label="Cy5", col="red", cex=2)
+text(500,2300, label="FITC", col="red", cex=2)
+```
+
+
+# Segment the cells based on the DNA and Actin staining
+```{r,fig.align="center"}
+## blur images with gaussian filter 
+DMSO_DAPI_smooth = gblur(DMSO_DAPI, radius = 51, sigma = 1)
+DMSO_cy5_smooth = gblur(DMSO_cy5, radius  = 51, sigma = 4)
+
+
+pos_DAPI_smooth = gblur(pos_DAPI, radius = 51, sigma = 1)
+pos_cy5_smooth = gblur(pos_cy5, radius  = 51, sigma = 4)
+
+
+
+# segment nuclei using adaptive thresholding 
+#  the window sized is chosen based on the proximal size of the nuclei 
+#      the first threshold is a bit smaller to sparate the nuclei
+#      the second is larger to fill gaps 
+# both masks are then combined using a propagation 
+
+DMSO_nucleusTresh = thresh(DMSO_DAPI_smooth, 
+                          w = 20, h = 20, 
+                          offset = 0.004)
+
+DMSO_nucleusTresh = fillHull(opening(DMSO_nucleusTresh,
+                           kern=makeBrush(9, shape="disc")))
+
+DMSO_nucleusFill = fillHull(thresh(DMSO_DAPI_smooth, 
+                          w = 30, h = 30, 
+                          offset = 0.001))
+
+DMSO_nucleusRegions = propagate(DMSO_DAPI_smooth,
+                           seed=bwlabel(DMSO_nucleusTresh),
+                           mask=DMSO_nucleusFill)
+
+# print the nuceli mask 
+display(colorLabels(DMSO_nucleusRegions),method = 'raster')
+
+# same for the positive ctrls
+pos_nucleusTresh = thresh(pos_DAPI_smooth, 
+                          w = 20, h = 20, 
+                          offset = 0.004)
+
+pos_nucleusTresh = fillHull(opening(pos_nucleusTresh,
+                           kern=makeBrush(9, shape="disc")))
+
+pos_nucleusFill = fillHull(thresh(pos_DAPI_smooth, 
+                          w = 30, h = 30, 
+                          offset = 0.001))
+
+pos_nucleusRegions = propagate(pos_DAPI_smooth,
+                           seed=bwlabel(pos_nucleusTresh),
+                           mask=pos_nucleusFill)
+
+## segment cell bodies by adaptive and global thersholding 
+##      the actin channel is used by combinig an adaptive and global threshold
+##      regions with mising cytoplasm signal are filled with 
+##          the nucleus binary mask and a fillHull command
+
+DMSO_cytoplasmThresh = thresh(DMSO_cy5_smooth,
+                         w = 28,
+                         h = 28,
+                         offset =  0.001)
+
+DMSO_cytoplasmOpening = opening(DMSO_cytoplasmThresh,
+                           kern=makeBrush(9,shape="disc"))
+
+
+DMSO_cytoplasmOpening2 = opening(DMSO_cy5_smooth > 0.03)
+
+
+DMSO_nucleusRegions2 <- DMSO_nucleusRegions
+DMSO_nucleusRegions2[DMSO_nucleusRegions != 0] <- 1
+
+
+DMSO_cytoplasmCombined = DMSO_cytoplasmOpening | DMSO_cytoplasmOpening2 |DMSO_nucleusRegions2 
+
+
+DMSO_cytoplasmRegions = propagate(x = DMSO_cy5_smooth,
+                             seeds = DMSO_nucleusRegions,
+                             lambda=1e-04,
+                             mask=DMSO_cytoplasmCombined)
+
+DMSO_cytoplasmRegions = fillHull(DMSO_cytoplasmRegions)
+
+# print the cell body mask
+display(colorLabels(DMSO_cytoplasmRegions),method = 'raster')
+
+# generate an RBG oberlay and add the segmentation outlines 
+DMSO_ImgColor = rgbImage(5*normalize(DMSO_cy5),
+                    5*normalize(DMSO_FITC),
+                    5*normalize(DMSO_DAPI))
+            
+DMSO_ImgOut = paintObjects(DMSO_cytoplasmRegions,
+                      paintObjects(DMSO_nucleusRegions,
+                                   DMSO_ImgColor,
+                                   col='blue'),
+                      col='white')
+
+# Print the RGB overlay with segmentation borders
+display(DMSO_ImgOut,method='raster')
+
+# repeat the cell body steps for the positive control image 
+pos_cytoplasmThresh = thresh(pos_cy5_smooth,
+                         w = 28,
+                         h = 28,
+                         offset =  0.001)
+
+pos_cytoplasmOpening = opening(pos_cytoplasmThresh,
+                           kern=makeBrush(9,shape="disc"))
+
+
+pos_cytoplasmOpening2 = opening(pos_cy5_smooth > 0.025)
+
+
+pos_nucleusRegions2 <- pos_nucleusRegions
+pos_nucleusRegions2[pos_nucleusRegions != 0] <- 1
+
+
+pos_cytoplasmCombined = pos_cytoplasmOpening | pos_cytoplasmOpening2 | pos_nucleusRegions2 
+
+
+pos_cytoplasmRegions = propagate(x = pos_cy5_smooth,
+                             seeds = pos_nucleusRegions,
+                             lambda=1e-04,
+                             mask=pos_cytoplasmCombined)
+
+pos_cytoplasmRegions = fillHull(pos_cytoplasmRegions)
+
+pos_ImgColor = rgbImage(5*normalize(pos_cy5),
+                    5*normalize(pos_FITC),
+                    5*normalize(pos_DAPI))
+            
+pos_ImgOut = paintObjects(pos_cytoplasmRegions,
+                      paintObjects(pos_nucleusRegions,
+                                   pos_ImgColor,
+                                   col='blue'),
+                      col='white')
+
+
+display(combine(DMSO_ImgOut,pos_ImgOut),
+        method = 'raster',
+        all=T)
+text(500,200, label="DMSO", col="white", cex=2)
+text(2900,200, label="PF-670462", col="white", cex=2)
+```
+
+
+# Segment objects in the FITC channel 
+Two appraoches are compared: either a global threshold or an adative threshold 
+combined with an opening. The global threshold is more 
+conservative and thus preferred. 
+```{r,fig.align="center"}
+# We start with a DMSO image
+
+# smoothen the images 
+DMSO_FITC_smooth = gblur(DMSO_FITC, radius  = 51, sigma = 4)
+pos_FITC_smooth = gblur(pos_FITC, radius  = 51, sigma = 4)
+
+
+# global threshold (a simply cutoff at a chosen intensity value)
+DMSO_puncTresh_global <- DMSO_FITC_smooth>0.025
+
+# adaptive threshold 
+#   (the thershold adapts to the mean intensity at each region of the image)
+DMSO_puncTresh_adapt = thresh(DMSO_FITC_smooth, 
+                          w = 20, h = 20, 
+                          offset = 0.006)
+
+# opening to remove tiny objects after the adaptive thresholding
+DMSO_puncTresh_adapt = fillHull(opening(DMSO_puncTresh_adapt,
+                           kern=makeBrush(7, shape="disc")))
+
+
+# compare the two approaches 
+display(combine(colorLabels(bwlabel(DMSO_puncTresh_global)),
+        colorLabels(bwlabel(DMSO_puncTresh_adapt))),
+        method = 'raster',
+        all=T)
+
+text(500,200, label="global", col="white", cex=2)
+text(2900,200, label="adaptive", col="white", cex=2)
+
+
+
+# global thresholding for positive contorl 
+pos_puncTresh_global <- pos_FITC_smooth>0.025
+
+
+# compare DMSO and positive ctrl
+display(combine(colorLabels(bwlabel(DMSO_puncTresh_global)),
+        colorLabels(bwlabel(pos_puncTresh_global))),
+        method = 'raster',
+        all=T)
+
+text(500,200, label="DMSO", col="white", cex=2)
+text(2900,200, label="PF-670462", col="white", cex=2)
+
+
+# only the number of objects is kept as a feature
+DMSO_n_punc <- length(unique(bwlabel(DMSO_puncTresh_global)[bwlabel(DMSO_puncTresh_global)!=0]))
+pos_n_punc <- length(unique(bwlabel(pos_puncTresh_global)[bwlabel(pos_puncTresh_global)!=0]))
+
+# print results
+print(paste0("Number of objects identified in the DMSO image: ",DMSO_n_punc))
+print(paste0("Number of objects identified in the PF-670462 image: ",pos_n_punc))
+```
+
+
+# Final notes
+We will calculate the cell morphology features based on the 
+DNA and Actin staining.  For the FITC channel the intensity featuress 
+inside cells will be calculated (e.g. mean intensity). 
+In addition we will save the number of objects identified in the the FITC channel. 
+
+
+# Session info
+```{r}
+sessionInfo()
+```
+
+
+

@@ -1,0 +1,539 @@
+---
+title: "Down_stream_analysis"
+author: "Florian Heigwer, Antonia Schubert"
+date: \today
+output: html_document
+editor_options: 
+    chunk_output_type: console
+---
+
+# Load dependencies
+
+```{r setup, include=FALSE,echo=FALSE,message=F,warning=F}
+knitr::opts_chunk$set(echo = TRUE)
+library(tidyverse)
+library(ggrastr)
+library(ggrepel)
+library(here)
+library(patchwork)
+
+theme_b110 <- function(){
+  theme_classic() +
+  theme(
+    axis.text = element_text(size = 10), 
+    axis.title = element_text(size = 10),
+    plot.title = element_text(size = 12,hjust = 0.5,face = "bold"),
+    legend.title = element_text(size = 12),
+    legend.text = element_text(size = 10),
+    legend.position = "bottom"
+    )
+}
+
+sgi_blue    = '#5087C8'
+sgi_yellow1 = '#F2EE35'
+sgi_yellow2 = '#FED98E'
+b110_grey   = '#808080'
+b110_grey_light   = '#909090'
+b110_transparent_black = alpha('#000000',0.5)
+google_red = '#dd4b39'
+google_green = '#0F9D58'
+google_yellow = '#F4B400'
+google_blue = '#4285F4'
+
+theme_set(theme_b110())
+```
+
+# Preamble
+
+In this experiment we want to assess the impact of kinase inhibition on WNT signaling and its correlation to the formation of Dsh harboring condensates that are believed the be the sites of WNT signaling activity.
+
+To this end TCF7L1 reporter screens were performed in Dsh-Eos postive HEK293T cells. These were transfected with the TCF7-Firefly-Luciferease reporter plasmid, a Constitutive-Renilla Plasmid, and finally, depending on the indicated condition also with a constitutive pcDNA Wnt3 expressing plasmid.
+
+As library a custom spotted Selelckchem Kinase library was employed.
+
+Positive control for WNT-Signaling induction is GSK-3b.
+
+Solvent Control is DMSO 0.5 % DMSO.
+
+All compounds were tested at 0.5 and 5 µM in-assay concentration.
+
+Experimental design was as follows.
+
+Day 1
+  Cell w/o Wnt3
+    2 x 3 x Plates (tech. repl.)
+  Cell w Wnt3
+    2 x 3 x Plates (tech. repl.)
+Day 2
+  Cell w/o Wnt3
+    2 x 3 x Plates (tech. repl.)
+  Cell w Wnt3
+    2 x 3 x Plates (tech. repl.)
+  
+
+# Load the data 
+# The data set was pulled from the data base and average per well 
+
+(mean over four fields per well, see get_data.Rmd for details).
+
+```{r,echo=F,warning=F,message=F}
+
+raw_data <- lapply(list.files("./raw_data","TXT",full.names = T),read_delim,delim="\t",col_names=c("plate_id","well_id","value"),progress=F,show_col_types=F) %>% bind_rows()
+
+raw_data %<>%
+  separate(plate_id,c("day","type","P","plate_id")) %>%
+  select(-P) %>%
+  spread(type,value) 
+
+```
+
+# Add the cell line annotation with redaily interpretable names
+
+```{r,echo=F,warning=F,message=F}
+
+plate_annotations <- readxl::read_excel("annotations/20220513_PlateAnnotations.xlsx") %>%
+                        select(
+                          plate_id=Number,
+                          day=date,
+                          library_id=`Kinase library`,
+                          library_plate=Plate,
+                          wnt_stimulation=Wnt_stimuation,
+                          replicate,
+                          concentration) %>%
+                        mutate(day=as.character(day))
+
+raw_data <- raw_data %>% left_join(plate_annotations,by="plate_id") %>%
+              mutate(library_plate=as.character(library_plate))
+```
+
+# Add library annotations 
+
+```{r,echo=F,warning=F,message=F}
+
+# load the annotation files 
+#anno <- read_delim("annotations/NEW_selleckKin_2018_ccTargets_final.csv", delim = ",") %>% 
+#          extract(`destination_plateID(384wp)`,"library_plate",".*p(\\d)") %>%
+#          rename(well_id=`wellID_destination(384wp)`) %>%
+#          mutate(well_id=gsub("^(\\w)(\\d)$","\\10\\2",well_id)) %>%
+#          mutate(product_name=if_else(grepl("DMSO",product_name),"DMSO",product_name)) %>%
+#          mutate(catalog_number=if_else(grepl("DMSO",catalog_number),"DMSO",catalog_number)) %>%
+#          mutate(target=if_else(grepl("DMSO",target),"DMSO",target)) %>%
+#          mutate(value=if_else(grepl("DMSO",value),"DMSO",value)) %>%
+#          unite(plate_well,library_plate,well_id,remove = F) %>%
+#          filter(!(plate_well %in% c("1_E15","2_E23","2_F06","2_J15","2_O21"))) # %>%
+
+anno <- read_delim(here("annotations","HC1094_selleckKIN1_anno.csv"), delim = ",") %>% 
+          mutate(library_plate_id = as.character(plate_id),library_id = "KIN")%>%
+          extract(library_plate_id,"library_plate",".+_p(\\d)") %>%
+          select(-plate_id) %>% mutate(value="sample")
+
+anno %<>%
+  separate(target_cc,into = c("temp1","temp2","temp3"),extra = "drop",sep = ";") %>%
+  mutate(temp2=if_else(is.na(temp2),"",temp2),
+         temp3=if_else(is.na(temp3),"",temp3)) %>%
+  unite(temp1,temp2,temp3,col = "target_cc",sep = ";") %>%
+  mutate(target_cc=gsub(";+$","",target_cc)) %>%
+  mutate(target_cc=if_else(grepl("NA",target_cc),if_else(!grepl("DMSO",target_selleck),target_selleck,"NA"),target_cc)) %>%
+  mutate(well_id = gsub("^(\\w)(\\d)$","\\10\\2",well_id))%>%
+  mutate(product_name=if_else(grepl("DMSO",product_name),"DMSO",product_name)) %>%
+  mutate(catalog_number=if_else(grepl("DMSO",catalog_number),"DMSO",catalog_number)) %>%
+  mutate(value=if_else(grepl("DMSO",value),"DMSO",value))
+
+
+pos_ctrls <- c("B02","G12","M21","L07","E17")
+
+anno %<>% 
+  mutate(product_name = if_else(well_id %in% c(pos_ctrls) ,"PF-670462", product_name)) %>% 
+  mutate(catalog_number = if_else(well_id %in% c(pos_ctrls) , "S6734", catalog_number)) %>% 
+  mutate(target_cc = if_else(well_id %in% c(pos_ctrls) , "CK1", target_cc))
+
+
+```
+
+# check some basic quality metrics
+
+Lets first assess the raw value distribution for oddities
+
+```{r,echo=F,warning=F,message=F}
+
+a <- raw_data %>%
+  ggplot(aes(Fluc,col=wnt_stimulation)) +
+    geom_density(alpha=0.7) +
+    facet_wrap(~day.x+library_plate) +
+    scale_x_log10() +
+    ggtitle("Fluc measurements raw")
+
+b <- raw_data %>%
+  ggplot(aes(Rluc,col=wnt_stimulation)) +
+    geom_density(alpha=0.7) +
+    facet_wrap(~day.x+library_plate) +
+    scale_x_log10()+
+    ggtitle("Rluc measurements raw")
+
+a/b
+```
+
+There is a clear bimodal distribution visible for each library plate that depends mostly on the status of Wnt stimulation as the experimental artifact.
+
+First we will collapse the measurement values of replicate plates.
+
+Second, we will normalize all values to the median value per plate. This should also remove general effects by the Wnt stimulation and day of seeding.
+
+```{r,echo=F,warning=F,message=F}
+
+norm_data <- raw_data %>%
+  left_join(anno,by = c("library_plate","library_id","well_id")) %>% 
+  group_by(plate_id,replicate) %>%
+    mutate(Fluc=Fluc/median(Fluc[product_name=="DMSO"],na.rm = T),
+           Rluc=Rluc/median(Rluc[product_name=="DMSO"],na.rm = T)) %>%
+  extract(well_id,c("row","column"),"(\\w)(.+)", remove=F) %>%
+  group_by(plate_id,replicate,row) %>%
+    mutate(Fluc=Fluc/median(Fluc,na.rm = T),
+         Rluc=Rluc/median(Rluc,na.rm = T)) %>%
+  group_by(plate_id,replicate,column) %>%
+    mutate(Fluc=Fluc/median(Fluc,na.rm = T),
+         Rluc=Rluc/median(Rluc,na.rm = T)) %>%
+  group_by(day.x,library_plate,well_id,wnt_stimulation,concentration) %>%
+  summarise(Rluc=mean(Rluc),Fluc=mean(Fluc)) %>%
+ # left_join(plate_annotations %>% mutate(library_plate=as.character(library_plate)))  %>%
+  left_join(anno) 
+
+a <- norm_data %>%
+  ggplot(aes(Fluc,col=wnt_stimulation)) +
+    geom_density(alpha=0.7) +
+    facet_wrap(~day.x+library_plate) +
+    scale_x_log10() +
+    ggtitle("Fluc measurements raw")
+
+b <- norm_data %>%
+  ggplot(aes(Rluc,col=wnt_stimulation)) +
+    geom_density(alpha=0.7) +
+    facet_wrap(~day.x+library_plate) +
+    scale_x_log10()+
+    ggtitle("Rluc measurements raw")
+
+a/b
+```
+
+Next we scale the Rluc measurement and discard all compounds treatments that kill most cells and thus give a RLuc signal smaller than a z-score of -2.
+
+```{r}
+
+norm_data %<>%
+  ungroup() %>%
+  mutate(Rluc_z=(Rluc-mean(Rluc))/sd(Rluc)) %>%
+  filter(Rluc_z>(-2)) %>%
+  group_by(wnt_stimulation,concentration,library_id,library_plate,well_id) %>%
+  filter(n()==2) %>%
+  ungroup() %>%
+  select(-Rluc_z) %>%
+  mutate(Luc_ratio=log(Fluc)-log(Rluc)) %>%
+  group_by(day.x,wnt_stimulation) %>%
+  mutate(Luc_ratio_z=(Luc_ratio-mean(Luc_ratio[product_name=="DMSO"],na.rm = T))/sd(Luc_ratio,na.rm = T)) %>%
+  ungroup()
+
+a <- norm_data %>%
+  ggplot(aes(Luc_ratio_z,col=wnt_stimulation)) +
+    geom_density(alpha=0.7) +
+    facet_wrap(~day.x+library_plate) +
+    ggtitle("Luc_ratio_z measurements normalized")
+
+a
+
+norm_data %>%
+  ggplot(aes(Luc_ratio_z,col=day.x)) +
+    geom_density(alpha=0.7) +
+    facet_wrap(~wnt_stimulation+library_plate) +
+    ggtitle("Luc_ratio_z measurements normalized")
+
+
+norm_data %>%
+  dplyr::select(day.x,Luc_ratio_z,library_plate,well_id,product_name,target_cc,concentration,wnt_stimulation) %>% 
+  spread(day.x,Luc_ratio_z) %>% 
+  ggplot(aes(x=`20220519`,y=`20220520`)) +
+    geom_point() +
+    geom_smooth(method = "lm") +
+    facet_wrap(~wnt_stimulation+library_plate+concentration,scales = "free")
+
+```
+
+# Lets quality control using plate plots
+
+```{r}
+# RLUC
+norm_data %>%
+  extract(well_id,c("row","column"),"(\\w)(.+)") %>%
+  mutate(row=factor(row,levels = rev(LETTERS[1:16]))) %>%
+  ggplot(aes(x=column,y=row,fill=log(Rluc))) +
+    geom_tile() +
+    facet_wrap(~library_plate+concentration+wnt_stimulation+day.x,ncol = 4)+
+    scale_fill_gradient2()
+
+#FLUC
+norm_data %>%
+  extract(well_id,c("row","column"),"(\\w)(.+)") %>%
+  mutate(row=factor(row,levels = rev(LETTERS[1:16]))) %>%
+  ggplot(aes(x=column,y=row,fill=log(Fluc))) +
+    geom_tile() +
+    facet_wrap(~library_plate+concentration+wnt_stimulation+day.x,ncol = 4)+
+    scale_fill_gradient2()
+
+#Ratio
+norm_data %>%
+  extract(well_id,c("row","column"),"(\\w)(.+)") %>%
+  mutate(row=factor(row,levels = rev(LETTERS[1:16]))) %>%
+  ggplot(aes(x=column,y=row,fill=Luc_ratio_z)) +
+    geom_tile() +
+    facet_wrap(~library_plate+concentration+wnt_stimulation+day.x,ncol = 4)+
+    scale_fill_gradient2()
+
+
+```
+
+
+Next we perform some statistical testing and plot the data as volcano
+
+```{r}
+
+data_w_wnt <- norm_data %>% 
+  ungroup() %>% 
+  filter(wnt_stimulation=="yes") %>%
+  #dplyr::select(day.x,Luc_ratio_z,product_name,target_cc,concentration) %>%
+  group_by(day.x,product_name,target_cc,concentration) %>%
+  summarise(Luc_ratio_z = mean(Luc_ratio_z,na.rm=T)) %>%
+  ungroup() %>%
+  spread(day.x,Luc_ratio_z) %>%
+  drop_na()
+
+p_values_w_wnt <- data_w_wnt %>%
+   dplyr::select(`20220519`,`20220520`) %>%
+   limma::lmFit() %>%
+   limma::eBayes() %>%
+   .$p.value
+  
+
+data_w_wnt <- data_w_wnt %>% 
+  mutate(pval=c(p_values_w_wnt),
+         mean_val=(`20220519`+`20220520`)/2) %>%
+  mutate(FDR=p.adjust(pval,method = "BH",n = n())) %>%
+  mutate(significant = if_else(FDR<0.2,"FDR<0.2","non-significant")) #%>%
+ # left_join(anno,by="product_name")
+
+a <- data_w_wnt %>%
+  ggplot(aes(x=mean_val,y=-log10(pval),label=target_cc,col=concentration,pch=significant)) +
+    geom_point()+
+    geom_label_repel(data = . %>% arrange(-abs(mean_val)) %>% head(20),min.segment.length = 0) +
+    ggtitle("Wnt3 stimulated HEK") +
+    xlab("z-score norm. TCF activation") 
+
+ax<- data_w_wnt %>%
+  ggplot(aes(x=mean_val,y=-log10(pval),label=product_name,col=concentration,pch=significant)) +
+    geom_point()+
+    geom_label_repel(data = . %>% arrange(-abs(mean_val)) %>% head(20),min.segment.length = 0) +
+    ggtitle("Wnt3 stimulated HEK") +
+    xlab("z-score norm. TCF activation") 
+
+a2 <- data_w_wnt %>%
+  ggplot(aes(x=mean_val,y=-log10(pval),label=target_cc,pch=significant)) +
+    geom_point()+
+    geom_label_repel(data = . %>% arrange(-abs(mean_val)) %>% head(20),min.segment.length = 0) +
+    ggtitle("Wnt3 stimulated HEK") +
+    xlab("z-score norm. TCF activation") +
+    facet_wrap(~concentration)
+
+a3<-data_w_wnt %>%
+  filter(!grepl("GSK3",target_cc)) %>%
+  ggplot(aes(x=mean_val,y=-log10(pval),label=target_cc,pch=significant)) +
+    geom_point()+
+    geom_label_repel(data = . %>% arrange(-abs(mean_val)) %>% head(20),min.segment.length = 0) +
+    ggtitle("Wnt3 stimulated HEK") +
+    xlab("z-score norm. TCF activation") +
+    facet_wrap(~concentration)
+  
+  
+data_wo_wnt <- norm_data %>% 
+  ungroup() %>% 
+  filter(wnt_stimulation=="no") %>%
+  #dplyr::select(day.x,Luc_ratio_z,product_name,target_cc,concentration) %>%
+  group_by(day.x,product_name,target_cc,concentration) %>%
+  summarise(Luc_ratio_z = mean(Luc_ratio_z,na.rm=T)) %>%
+  ungroup() %>%
+  spread(day.x,Luc_ratio_z) %>%
+  drop_na()
+
+p_values_wo_wnt <- data_wo_wnt %>%
+   dplyr::select(`20220519`,`20220520`) %>%
+   limma::lmFit() %>%
+   limma::eBayes() %>%
+   .$p.value
+  
+
+data_wo_wnt <- data_wo_wnt %>% 
+  mutate(pval=c(p_values_wo_wnt),
+         mean_val=(`20220519`+`20220520`)/2) %>%
+  mutate(FDR=p.adjust(pval,method = "BH",n = n())) %>%
+  mutate(significant = if_else(FDR<0.2,"FDR<0.2","non-significant"))
+
+b <- data_wo_wnt %>%
+  ggplot(aes(x=mean_val,y=-log10(pval),label=target_cc,col=concentration,pch=significant)) +
+    geom_point()+
+    geom_label_repel(data = . %>% arrange(-abs(mean_val)) %>% head(20),min.segment.length = 0) +
+    ggtitle("Non stimulated HEK") +
+    xlab("z-score norm. TCF activation") 
+
+bx <- data_wo_wnt %>%
+  ggplot(aes(x=mean_val,y=-log10(pval),label=product_name,col=concentration,pch=significant)) +
+    geom_point()+
+    geom_label_repel(data = . %>% arrange(-abs(mean_val)) %>% head(20),min.segment.length = 0) +
+    ggtitle("Non stimulated HEK") +
+    xlab("z-score norm. TCF activation")
+
+b2 <- data_wo_wnt %>%
+  ggplot(aes(x=mean_val,y=-log10(pval),label=target_cc,pch=significant)) +
+    geom_point()+
+    geom_label_repel(data = . %>% arrange(-abs(mean_val)) %>% head(20),min.segment.length = 0) +
+    ggtitle("Non stimulated HEK") +
+    xlab("z-score norm. TCF activation") +
+    facet_wrap(~concentration)
+
+b3<-data_wo_wnt %>%
+  filter(!grepl("GSK3",target_cc)) %>%
+  ggplot(aes(x=mean_val,y=-log10(pval),label=target_cc,pch=significant)) +
+    geom_point()+
+    geom_label_repel(data = . %>% arrange(-abs(mean_val)) %>% head(20),min.segment.length = 0) +
+    ggtitle("Non stimulated HEK") +
+    xlab("z-score norm. TCF activation") +
+    facet_wrap(~concentration)
+  
+
+p <- a/b
+
+ggsave("results/volcano_w_wo_wnt_target_labels.pdf",p)
+
+px <- ax/bx
+
+ggsave("results/volcano_w_wo_wnt_drug_name_labels.pdf",px)
+
+p2 <- a2/b2
+
+ggsave("results/volcano_w_wo_wnt_concentrations_split.pdf",p2)
+
+p3 <- a3/b3
+
+ggsave("results/volcano_w_wo_wnt_concentrations_split_woGSK3.pdf",p3)
+
+
+
+```
+
+# Lets integrate data with prvious results
+
+There was tested if the same chemical compound induce or reduce the formation of Dsh containing bio-molecular condensates.
+
+```{r}
+
+image_data <- 
+  read_csv("~/Desktop/Projects/Image_Based_screens_analyses/collaborations_internal/open_cases/Antonia_Schubert_Dsh_mEos_condensate_screen/image_based/HC1098_analysis/results/hit_list_unfiltered.csv") %>%
+  mutate(concentration=if_else(concentration=="l","low","high"))
+
+
+joined_data <- data_wo_wnt %>%
+  left_join(image_data,suffix = c(".reporter",".image"),by = c("product_name","target_cc","concentration")) %>%
+  filter(!grepl("DMSO",product_name)) %>% 
+  select(product_name,target_cc,concentration,`20220519`,`20220520`
+         ,pval.reporter,pval.image,FDR.reporter=fdr,FDR.image=FDR,zscore.reporter=mean_val, zscore.image=Avg_puncta_z) 
+
+rlm <- MASS::rlm
+
+a <- joined_data %>%
+  ggplot(aes(x=zscore.image,y=zscore.reporter,label=target_cc)) +
+    geom_point() +
+    geom_hline(yintercept = 0)+
+    geom_vline(xintercept = 0) +
+    geom_smooth(method = "lm") +
+    geom_label_repel(data= . %>% arrange(-abs(zscore.reporter)) %>% head(15)) +
+    ggtitle("Full data set")
+
+b <- joined_data %>%
+  filter(!grepl("GSK3",target_cc)) %>%
+  ggplot(aes(x=zscore.image,y=zscore.reporter,label=target_cc)) +
+    geom_point() +
+    geom_hline(yintercept = 0)+
+    geom_vline(xintercept = 0) +
+    geom_smooth(method = "lm") +
+    geom_label_repel(data= . %>% arrange(-abs(zscore.image)) %>% head(15))+
+    ggtitle("Full data set - GSK3-b inhib.")
+
+c <-joined_data %>%
+  filter(!grepl("GSK3",target_cc)) %>%
+  filter(FDR.reporter<0.3,FDR.image<0.3) %>%
+  ggplot(aes(x=zscore.image,y=zscore.reporter,label=target_cc)) +
+    geom_point() +
+    geom_hline(yintercept = 0)+
+    geom_vline(xintercept = 0) +
+    geom_smooth(method = "lm") +
+    geom_label_repel(data= . %>% arrange(-abs(zscore.image)) %>% head(15))+
+    ggtitle("Full data set - GSK3-b inhib., only signif. hits")
+
+
+p1 <- a+b+c
+
+ggsave("results/data_integration_without_stimulation.pdf",p1)
+
+joined_data %>%
+  write_csv("processed_data/data_wo_wnt_joined.csv")
+```
+
+```{r}
+joined_data <- data_w_wnt %>%
+  left_join(image_data,suffix = c(".reporter",".image"),by = c("product_name","target_cc","concentration")) %>%
+  filter(!grepl("DMSO",product_name)) %>% 
+  select(product_name,target_cc,concentration,`20220519`,`20220520`
+         ,pval.reporter,pval.image,FDR.reporter=fdr,FDR.image=FDR,zscore.reporter=mean_val, zscore.image=Avg_puncta_z) 
+
+
+a <- joined_data %>%
+  ggplot(aes(x=zscore.image,y=zscore.reporter,label=target_cc)) +
+    geom_point() +
+    geom_hline(yintercept = 0)+
+    geom_vline(xintercept = 0) +
+    geom_smooth(method = "lm") +
+    geom_label_repel(data= . %>% arrange(-abs(zscore.reporter)) %>% head(15)) +
+    ggtitle("Full data set")
+
+b <- joined_data %>%
+  filter(!grepl("GSK3",target_cc)) %>%
+  ggplot(aes(x=zscore.image,y=zscore.reporter,label=target_cc)) +
+    geom_point() +
+    geom_hline(yintercept = 0)+
+    geom_vline(xintercept = 0) +
+    geom_smooth(method = "lm") +
+    geom_label_repel(data= . %>% arrange(-abs(zscore.image)) %>% head(15))+
+    ggtitle("Full data set - GSK3-b inhib.")
+
+c <-joined_data %>%
+  filter(!grepl("GSK3",target_cc)) %>%
+  filter(FDR.reporter<0.3,FDR.image<0.3) %>%
+  ggplot(aes(x=zscore.image,y=zscore.reporter,label=target_cc)) +
+    geom_point() +
+    geom_hline(yintercept = 0)+
+    geom_vline(xintercept = 0) +
+    geom_smooth(method = "lm") +
+    geom_label_repel(data= . %>% arrange(-abs(zscore.image)) %>% head(15))+
+    ggtitle("Full data set - GSK3-b inhib., only signif. hits")
+
+
+p1 <- a+b+c
+
+ggsave("results/data_integration_with_stimulation.pdf",p1)
+
+joined_data %>%
+  write_csv("processed_data/data_w_wnt_joined.csv")
+
+```
+
+
+# Session info
+```{r}
+sessionInfo()
+```
