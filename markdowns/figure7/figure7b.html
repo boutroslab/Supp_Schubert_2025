@@ -712,12 +712,9 @@ function toggle_visibility(id1) {
 <li><a href="#preamble" id="toc-preamble"><span class="toc-section-number">1</span> Preamble</a></li>
 <li><a href="#load-dependencies" id="toc-load-dependencies"><span class="toc-section-number">2</span> Load dependencies</a></li>
 <li><a href="#load-the-data-after-the-image-analysis" id="toc-load-the-data-after-the-image-analysis"><span class="toc-section-number">3</span> Load the data after the image analysis</a></li>
-<li><a href="#note-per-well-four-field-were-imaged-and-analyzed." id="toc-note-per-well-four-field-were-imaged-and-analyzed."><span class="toc-section-number">4</span> Note: Per well, four field were imaged and analyzed.</a></li>
-<li><a href="#for-subsequent-analysis-the-data-is-averaged-per-well" id="toc-for-subsequent-analysis-the-data-is-averaged-per-well"><span class="toc-section-number">5</span> For subsequent analysis the data is averaged per well</a></li>
-<li><a href="#normalize-condensate-counts-to-cell-count-i.e.-the-number-of-segmented-cells" id="toc-normalize-condensate-counts-to-cell-count-i.e.-the-number-of-segmented-cells"><span class="toc-section-number">6</span> normalize condensate counts to cell count (i.e. the number of segmented cells)</a></li>
-<li><a href="#and-average-per-plate" id="toc-and-average-per-plate"><span class="toc-section-number">7</span> and average per plate</a></li>
-<li><a href="#plot-for-figure-7-b" id="toc-plot-for-figure-7-b"><span class="toc-section-number">8</span> Plot for Figure 7 B</a></li>
-<li><a href="#session-info" id="toc-session-info"><span class="toc-section-number">9</span> Session info</a></li>
+<li><a href="#normalize-condensate-counts" id="toc-normalize-condensate-counts"><span class="toc-section-number">4</span> Normalize condensate counts</a></li>
+<li><a href="#plot-for-figure-7-b" id="toc-plot-for-figure-7-b"><span class="toc-section-number">5</span> Plot for Figure 7 B</a></li>
+<li><a href="#session-info" id="toc-session-info"><span class="toc-section-number">6</span> Session info</a></li>
 </ul>
 </div>
 
@@ -745,12 +742,8 @@ theme_set(theme_cowplot(font_size = 12))</code></pre>
 </div>
 <div id="load-the-data-after-the-image-analysis" class="section level1" number="3">
 <h1><span class="header-section-number">3</span> Load the data after the image analysis</h1>
-</div>
-<div id="note-per-well-four-field-were-imaged-and-analyzed." class="section level1" number="4">
-<h1><span class="header-section-number">4</span> Note: Per well, four field were imaged and analyzed.</h1>
-</div>
-<div id="for-subsequent-analysis-the-data-is-averaged-per-well" class="section level1" number="5">
-<h1><span class="header-section-number">5</span> For subsequent analysis the data is averaged per well</h1>
+<p>Note: Per well, four field were imaged and analyzed.
+For subsequent analysis the data is averaged per well</p>
 <pre class="r"><code>files &lt;- list.files(here(&quot;raw_data/figure7&quot;))
 
 raw_data &lt;- lapply(files, function(x)
@@ -788,11 +781,10 @@ anno &lt;- read_csv(here(&quot;annotation/figure7&quot;,&quot;figure7_annotation
 <pre class="r"><code>raw_data &lt;- raw_data %&gt;% 
   left_join(anno,by=c(&quot;well_id&quot;))</code></pre>
 </div>
-<div id="normalize-condensate-counts-to-cell-count-i.e.-the-number-of-segmented-cells" class="section level1" number="6">
-<h1><span class="header-section-number">6</span> normalize condensate counts to cell count (i.e. the number of segmented cells)</h1>
-</div>
-<div id="and-average-per-plate" class="section level1" number="7">
-<h1><span class="header-section-number">7</span> and average per plate</h1>
+<div id="normalize-condensate-counts" class="section level1" number="4">
+<h1><span class="header-section-number">4</span> Normalize condensate counts</h1>
+<p>Condensate counts are normalized to cell count
+(i.e. the number of segmented cells) and average per plate</p>
 <pre class="r"><code>norm_data &lt;- raw_data %&gt;% 
   select(well_id,experiment,plate_id,
          cell_count,punct_count_adapt,punct_count_global,
@@ -803,8 +795,8 @@ anno &lt;- read_csv(here(&quot;annotation/figure7&quot;,&quot;figure7_annotation
     ungroup() %&gt;% 
       select(-cell_count,-punct_count_global,-punct_count_adapt)</code></pre>
 </div>
-<div id="plot-for-figure-7-b" class="section level1" number="8">
-<h1><span class="header-section-number">8</span> Plot for Figure 7 B</h1>
+<div id="plot-for-figure-7-b" class="section level1" number="5">
+<h1><span class="header-section-number">5</span> Plot for Figure 7 B</h1>
 <pre class="r"><code>set.seed(1)
 boxplot_medium &lt;- norm_data %&gt;% 
         filter(treatment == &quot;medium&quot;) %&gt;%
@@ -846,8 +838,8 @@ ggsave(here(&quot;./graphics/Figure7b&quot;,&quot;figure7b.pdf&quot;),
             plot=boxplot_medium,
             width = 14,height = 10)</code></pre>
 </div>
-<div id="session-info" class="section level1" number="9">
-<h1><span class="header-section-number">9</span> Session info</h1>
+<div id="session-info" class="section level1" number="6">
+<h1><span class="header-section-number">6</span> Session info</h1>
 <pre class="r"><code>sessionInfo()</code></pre>
 <pre><code>## R version 4.3.0 (2023-04-21)
 ## Platform: x86_64-pc-linux-gnu (64-bit)
