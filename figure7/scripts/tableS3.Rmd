@@ -1,0 +1,109 @@
+---
+title: "Downstream analysis followig the image analysis to quanttify Dvl2_mEos codensates"
+subtitle: "Markdown to reproduce Table S3"
+author:  
+- name: "Christian Scheeder"
+- name: "Antionia Schubert"
+  affiliation:
+  - "Division Signalling and Functional Genomics, German Cancer Research Center (DKFZ) Heidelberg"  
+date: \today
+output:
+    BiocStyle::html_document
+vignette: >
+    %\VignetteIndexEntry{Vignette Title}
+    %\VignetteEngine{knitr::rmarkdown}
+editor_options: 
+    chunk_output_type: console
+---
+
+
+
+# Preamble
+The image analysis was carried out as follows:
+In a first step cells were identified by segmentation. Nuclei were identified 
+based on a Hoechst staining (DAPI channel) and cell bodies 
+based on a DyLight Phalloidin staining 
+(Cy5 channel). 
+After segmentation condensates inside cells were identified based on intensity-
+based thresholding (FITC channel) and counted. Condensate counts and 
+cell counts (number of segmented cells) were saved for each image.
+For more details see Schubert et al., PNAS, 2021, 
+(https://doi.org/10.1073/pnas.2122476119)
+
+
+# Load dependencies
+```{r setup, message=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+library(tidyverse)
+library(here)
+library(cowplot)
+library(ggpubr)
+theme_set(theme_cowplot(font_size = 12))
+```
+
+
+# Load the data after the image analysis
+Note: Per well, four field were imaged and analyzed.
+     For subsequent analysis the data is averaged per well
+```{r}
+files <- list.files(here("raw_data/figure7"))
+
+raw_data <- lapply(files, function(x)
+  read_rds(file.path(here("raw_data/figure7"),x))) %>% 
+  bind_rows()
+              
+# average across the fields 
+raw_data <- raw_data %>% separate(well_id,c("well_id","field_id"),"_") %>% 
+  group_by(experiment,plate_id,well_id) %>% 
+        summarise_if(is.numeric,median) %>% 
+          ungroup() 
+
+# add annotation
+anno <- read_csv(here("annotation/figure7","figure7_annotation.csv")) %>% 
+          select(well_ID,Cell_line,Treatment) %>% 
+          `colnames<-`(c("well_id", "cell_line", "treatment"))
+
+
+raw_data <- raw_data %>% 
+  left_join(anno,by=c("well_id"))
+
+```
+
+
+# Normalize condensate counts 
+Condensate counts are normalized to cell count 
+(i.e. the number of segmented cells) and average per plate
+```{r}
+norm_data <- raw_data %>% 
+  select(well_id,experiment,plate_id,
+         cell_count,punct_count_adapt,punct_count_global,
+         cell_line,treatment) %>% 
+   mutate(norm_punct_count = punct_count_adapt/cell_count) %>%
+    group_by(experiment,plate_id,cell_line,treatment) %>%
+    summarise_if(is.numeric,median) %>% 
+    ungroup() %>% 
+      select(-cell_count,-punct_count_global,-punct_count_adapt)
+```
+
+
+# Perform Wilcoxon signed-rank test
+```{r}
+# statistical testing 
+data_stat_test <- norm_data %>% 
+        filter(treatment == "medium" & cell_line != "HEK293T_wt") %>%
+        select(cell_line,experiment,plate_id,norm_punct_count) %>% 
+        unite(replicate,experiment,plate_id,sep=":") %>% 
+        as.data.frame()
+
+res_stat_test <- pairwise.wilcox.test(data_stat_test$norm_punct_count,
+                                      data_stat_test$cell_line,
+                     p.adjust.method = "BH")
+
+res_stat_test
+```
+
+
+# Session info
+```{r}
+sessionInfo()
+```
