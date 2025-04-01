@@ -24,10 +24,10 @@ cl082 = other
 # Load the data 
 ```{r cars}
 av_db <- src_postgres(
-  dbname = "HC1098",
-  host = "b110-sc2sn01",
-  user = "AntoniaS",
-  password = "dvlror2"
+  dbname = "",
+  host = "",
+  user = "",
+  password = ""
 )
 
 raw_data_db <- tbl(av_db,"average_cell") #%>% select(ends_with("_id"))
