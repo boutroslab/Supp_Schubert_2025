@@ -2,7 +2,7 @@
 
 [![DOI](https://TBA)
 
-_The paper this repository relates to is currently under preparation._
+_The paper this repository relates to is currently in submission._
 
 This directory contains scripts and files supporting the publication: </br>
 
