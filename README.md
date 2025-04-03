@@ -6,7 +6,7 @@ _The paper this repository relates to is currently in submission._
 
 This directory contains scripts and files supporting the publication: </br>
 
-[Schubert _et al._](http://LINK_TBA), 2024, **Image-based screens identify regulators of endogenous Dvl2 biomolecular condensates**, _Journal_TBA_
+[Schubert _et al._](http://LINK_TBA), 2025, **Image-based screens identify regulators of endogenous Dvl2 biomolecular condensates**, _Journal_TBA_
 
 ## Abstract
 
